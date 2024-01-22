@@ -426,6 +426,47 @@ tfiebig@gw02# show routing-options rib inet.0 static
 route 192.0.2.0/24 next-hop fe80::2be:43ff:fe07:3202;
 ~~~
 
+# Network Design Example
+( This section to be removed before publication. )
+
+Using v4-with-v6 nexthop allows for more unified network configuration and
+addressing plans, and reduces configuration overhead by binding delegation
+rules for IPv4 and IPv6 prefixes together.
+
+Consider the following addressing plan for a VM provider, using the following 
+prefixes for its services:
+
+2001:db8::/32
+192.0.2.0/24
+
+Furthermore, the provider offers a /48 with each virtual machine, routed to
+the IPv6 LL of the machine. A /32 IPv4 can be aquired optionally.
+
+In a traditional setup, the provider would have to, at least, maintain two
+databases for mapping a prefix to a VM, one for IPv4, one for IPv6.
+Additionally, as seen with some providers, either additional IPv4 addresses are
+consumed for subnetting/routing, or additional transition techniques have to be
+implemented, e.g., using [RFC1918] addresses for customers who also opted to
+use an IPv4 address.
+
+Using v4-with-v6 nexthop significantly simplifies this setup:
+
+- The provider assigns each VM a /48 from 2001:db8::/32, and routes this to
+  the known IPv6 LL of the VM, e.g., 2001:db8:1234::/48,
+- If a customer opts for also using a /32 IPv4, the provider then routes this
+  prefix using 2001:db8:1234:: as the v4-over-v6 nexthop. As 
+  2001:db8:1234::/48 is routed to the VMs LL, packets will ultimately arrive
+  at the correct destination.
+- The customer sets an IPv4 default route to fe80::1.
+
+With this setup, the provider can use the full /24 of available IP addresses
+for addressing customers. Furthermore, if a VM migrates to a different
+hypervisor, only one path, i.e., the one for the IPv6 LL needs to be updated
+for the IPv4 route to follow along.
+
+Similarly, if a customer receives a new VM with a different IPv6 LL, it
+suffices to update the next-hop for the assigned /48 to ensure all customer
+resources are routed to the correct destination, again, reducing overhead.
 
 # Security Considerations
 
@@ -477,6 +518,18 @@ IPv6 LL [RFC4942], but also due to, e.g., rogue DHCP servers (v4 and v6,
 accidentally advertising prefixes that should not be globally reachable (via an
 exact or less specific route/route-leak), or due to neighbors setting static
 routes.
+
+Operators should execute additional care when binding an IPv4 address only to
+the loopback interface of a system, while using v4-with-v6 nexthop for routing,
+as many operating systems and software stacks consider the loopback interface
+"secure" and local, commonly exposing insecure services on that interface.
+
+Additionally, if operators implement IPv4 addressing at the edge by binding
+an IPv4 address to a systems loopback interfaces, packet filtering rules may
+have to be applied to rules for forwarded packets instead of rules for inbound
+packets for the uplink interface.
+
+
 }
 
 
