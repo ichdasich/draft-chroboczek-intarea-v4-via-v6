@@ -103,7 +103,11 @@ IPv4 packet from being routed through a next hop with an IPv6 address.
 (In fact, it is even possible to store link-layer addresses directly in
 the next-hop entry of the routing table, thus avoiding the use of an
 address resolution protocol altogether, which is commonly done in networks
-using the OSI protocol suite).
+using the OSI protocol suite or by BGP implementations when storing the
+IPv6 nexthop of a route).
+
+{Note TF: IIRC the v6 nexthop a bgpd pushes to the FIB is iirc also the LL of
+the immediate nexthop, instead of the addr. received in the NLRI.}
 
 The case of routing IPv4 packets through an IPv6 next hop is
 particularly interesting, since it makes it possible to build
@@ -183,7 +187,10 @@ However, in order to use the additional flexibility provided by v4-via-v6
 routing, routing protocols will need to be extended with the ability to
 populate the routing table with v4-via-v6 routes when an IPv4 address is
 not available or when the available IPv4 addresses are not suitable for
-use as a next-hop (e.g., not stable enough).
+use as a next-hop (e.g., not statically configured with a high churn rate).
+
+{Note TF: Would avoid the word stable, as it may be read as an implications of
+insufficienty network reliability.}
 
 ### Distance-vector routing protocols
 
@@ -210,7 +217,7 @@ routers are unable to send ICMPv4 packets, PMTUd may lead to
 persistent black-holing of IPv4 traffic.
 
 Due to this kind of dependency, every router that is able to
-forward IPv4 traffic SHOULD be able originate ICMPv4 traffic.  Since
+forward IPv4 traffic SHOULD be able to originate ICMPv4 traffic.  Since
 the extension described in this document enables routers to forward
 IPv4 traffic received over an interface that has not been assigned an
 IPv4 address, a router implementing this extension MUST be able to
@@ -220,7 +227,7 @@ been assigned an IPv4 address.
 In such a situation, if the router has an interface that has been
 assigned an IPv4 address (other than the loopback address), or if an
 IPv4 address has been assigned to the router itself (to the "loopback
-interface"), then that IPv4 address may be used as the source of
+interface"), then that IPv4 address MAY be used as the source of
 originated ICMPv4 packets.  If no IPv4 address is available, the
 router could use the experimental mechanism described in Requirement
 R-22 of Section 4.8 [RFC7600], which consists of using the dummy
@@ -280,6 +287,10 @@ so ICMP packets with this source address are likely to be dropped. Is this a
 major issue? Would requesting another address be a better solution? Would it help? If it were to be allocated from some more global pool, it would still
 likely require "magic" to allow it to pass BCP38 filters.
 }
+
+{ Note TF:
+
+Jen had suggested RFC8335 as a solution to this issue as well.}
 
 # Implementation Status
 ( This section to be removed before publication. )
@@ -374,6 +385,47 @@ Columns: DST-ADDRESS, GATEWAY, DISTANCE
 0  As  192.0.2.0/24      fe80::201:5cff:feb2:1646%1_Comcast         1
 ~~~
 
+## FreeBSD
+
+A first implementation for v4-via-v6 next-hops was contributed to FreeBSD in
+2018 (https://reviews.freebsd.org/D18581), followed by a more comprehensive
+implementation starting in 2021 (https://reviews.freebsd.org/D18581).  The
+first release to support this was FreeBSD 13, even though not mentioned in the
+release notes (https://www.freebsd.org/releases/13.0R/relnotes/).
+
+### Example
+~~~
+root@anthil:~ # route -n add -net 192.0.2.0/24 -inet6 \
+    fe80::2002:c7ff:fe9d:b378%vtnet0
+add net 192.0.2.0: gateway fe80::2002:c7ff:fe9d:b378%vtnet0
+root@anthil:~ # route -n show 192.0.2.0/24
+   route to: 192.0.2.0
+destination: 192.0.2.0
+       mask: 255.255.255.0
+    gateway: fe80::2002:c7ff:fe9d:b378%vtnet0
+        fib: 0
+  interface: vtnet0
+      flags: <UP,GATEWAY,DONE,STATIC>
+ recvpipe  sendpipe  ssthresh  rtt,msec    mtu        weight    expire
+       0         0         0         0      1500         1         0 
+~~~
+
+## JunOS
+
+JunOS, at least as of 22.2R3.15, supports RFC 8950, but does not implement
+the neceesary CLI features to statically configure IPv4 routes with an IPv6
+nexthop.
+
+While an IPv4 route with an IPv6 nexthop can be configured, it is not installed
+into the RIB/FIB thereafter.
+
+### Example
+
+~~~
+tfiebig@gw02# show routing-options rib inet.0 static
+route 192.0.2.0/24 next-hop fe80::2be:43ff:fe07:3202;
+~~~
+
 
 # Security Considerations
 
@@ -392,6 +444,42 @@ IPv4-only hosts reachable from the IPv4 Internet.  If this is not
 desirable, then the network administrator must filter out the undesirable
 traffic in the forwarding plane by implementing suitable packet filtering
 rules.
+
+{Comment TF: I have some gripes with calling this 'a reasonable assumption';
+(Temporary) absence of an AFI on an interface is not a means of explicit access
+control. I would say that this is the inverse misconception as documented for
+IPv6 LL in Sec. 2.1.12 of RFC4942.
+
+Instead, I would argue for the following formulation:
+
+The techniques described in this document make routing more flexible by
+allowing IPv4 routes to propagate across a section of a network that has
+only been assigned IPv6 addresses.  This additional flexibility might
+create unexpected network paths similar to the issue of IPv6 Link-Local
+addresses creating reachability for IPv4 only hosts potentially not covered
+by pre-existing firewall rules as described in Section 2.1.12 of [RFC4942].
+
+For example, if an island of IPv4-only hosts is separated from the IPv4
+Internet by routers that have not been assigned IPv4 addresses, a network
+administrator might assume that the IPv4-only hosts are unreachable from the
+IPv4 Internet.  This assumption might be broken if the intermediary routers
+implement v4-via-v6 routing, which might make the IPv4-only hosts reachable
+from the IPv4 Internet.
+
+However, network administrators should always ensure their desired network
+reachability properties via explicit packet filtering for all AFIs that filter
+out undesirable traffic in the forwarding plane.
+
+Otherwise, unexpected connectivity may occur via a multitude of
+misconfigurations and unexpected changes, including v4-with-v6 next-hop and
+IPv6 LL [RFC4942], but also due to, e.g., rogue DHCP servers (v4 and v6,
+[RFC..., RFC...]), rogue Router Advertisments (Section 2.1.13, [RFC4942]),
+accidentally advertising prefixes that should not be globally reachable (via an
+exact or less specific route/route-leak), or due to neighbors setting static
+routes.
+}
+
+
 
 # IANA Considerations
 
